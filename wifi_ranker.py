@@ -1,7 +1,9 @@
+import configparser
 import subprocess
 import time
 import socket
 import sys
+from pathlib import Path
 
 # =====================================================================
 # 🔍 STEP 1: DEPENDENCY CHECK / 依存関係の確認
@@ -20,13 +22,43 @@ except ModuleNotFoundError:
     sys.exit(1)
 
 # --- ⚙️ CONFIGURATION & CONSTANTS / 各種設定 ---
-WIFI_INTERFACE = "Wi-Fi"      
-CONNECT_TIMEOUT = 20           
-TEST_TIMEOUT = 15              
-OPTIMIZATION_MODE = 'download_heavy' 
+CONFIG_FILE = Path(__file__).resolve().with_name("wifi_ranker.ini")
 
-# --- 🎯 TARGET COMPANY NETWORK POOL / 評価対象の社内Wi-Fiリスト ---
-COMPANY_WIFI_POOL = ['DP-TK1', 'DP-TK2', 'DP-TK3', 'DP-TK4', 'DP-TK5 2.4G', 'DP-TK5 5.0G']
+def load_config():
+    if not CONFIG_FILE.exists():
+        config = configparser.ConfigParser()
+        config["GENERAL"] = {
+            "wifi_interface": "Wi-Fi",
+            "connect_timeout": "20",
+            "test_timeout": "15",
+            "optimization_mode": "download_heavy",
+            "auto_switch": "false",
+        }
+        config["WIFI"] = {
+            "target_networks": "DP-TK1,DP-TK2,DP-TK3,DP-TK4,DP-TK5 2.4G,DP-TK5 5.0G"
+        }
+        try:
+            with CONFIG_FILE.open("x", encoding="utf-8") as config_file:
+                config.write(config_file)
+        except FileExistsError:
+            pass
+
+    config = configparser.ConfigParser()
+    config.read(CONFIG_FILE, encoding="utf-8")
+    return config
+
+
+CONFIG = load_config()
+WIFI_INTERFACE = CONFIG.get("GENERAL", "wifi_interface")
+CONNECT_TIMEOUT = CONFIG.getint("GENERAL", "connect_timeout")
+TEST_TIMEOUT = CONFIG.getint("GENERAL", "test_timeout")
+OPTIMIZATION_MODE = CONFIG.get("GENERAL", "optimization_mode")
+AUTO_SWITCH = CONFIG.getboolean("GENERAL", "auto_switch", fallback=False)
+COMPANY_WIFI_POOL = [
+    ssid.strip()
+    for ssid in CONFIG.get("WIFI", "target_networks", fallback="").split(",")
+    if ssid.strip()
+]
 
 def get_current_wifi_ssid():
     """現在接続中のWi-Fiネットワーク名(SSID)を安全に取得します"""
@@ -166,12 +198,15 @@ def main():
             if best_target_ssid != starting_wifi:
                 print("\n" + "="*70)
                 print(f"💡 提案 (Recommendation): 現在のエリアでは '{best_target_ssid}' が最速です。")
-                user_input = input(f"👉 このまま最速の '{best_target_ssid}' に接続を維持しますか？ (Y/N): ").strip().lower()
-                print("="*70)
-                
-                if user_input == 'y':
+                if AUTO_SWITCH:
                     print(f"🚀 了解しました。最速回線 '{best_target_ssid}' を維持して終了します。")
                     target_wifi = best_target_ssid 
+                else:
+                    user_input = input(f"👉 このまま最速の '{best_target_ssid}' に接続を維持しますか？ (Y/N): ").strip().lower()
+                    if user_input == 'y':
+                        print(f"🚀 了解しました。最速回線 '{best_target_ssid}' を維持して終了します。")
+                        target_wifi = best_target_ssid
+                print("="*70)
             else:
                 print("\n" + "="*70)
                 print(f"✅ 判定: 現在接続中の '{starting_wifi}' が、このエリアで最も良好なダウンロード速度です！")
