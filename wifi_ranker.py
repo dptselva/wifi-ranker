@@ -159,12 +159,13 @@ def main():
         print(f"📋 評価対象のWi-Fiリスト (Queued targets): {wifi_targets}\n")
 
         # 🚀 PHASE 1: 現在の接続先をそのまま即時測定
-        if starting_wifi in wifi_targets:
+        if starting_wifi:
             print(f"⚡ 現在の接続先 '{starting_wifi}' をそのまま即時測定します（シングルスレッド）...")
             dl, ul = test_current_network_speed_safely()
             leaderboard.append({"ssid": starting_wifi, "download": dl, "upload": ul})
             print(f"   📊 測定結果 -> DL: {dl} Mbps | UL: {ul} Mbps")
-            wifi_targets.remove(starting_wifi)
+            if starting_wifi in wifi_targets:
+                wifi_targets.remove(starting_wifi)
 
         # 🔄 PHASE 2: 残りの対象ネットワークを巡回
         for ssid in wifi_targets:
