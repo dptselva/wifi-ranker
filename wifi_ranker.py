@@ -90,6 +90,27 @@ def get_saved_pc_profiles():
     except Exception:
         return []
 
+def get_visible_wifi_ssids():
+    """現在Wi-Fiインターフェースから検出できるSSID一覧を返します"""
+    try:
+        networks_cmd = subprocess.run(
+            ["netsh", "wlan", "show", "networks", "mode=bssid", f"interface={WIFI_INTERFACE}"],
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as e:
+        print(f"⚠️ 周辺Wi-Fiネットワークを検索できませんでした: {e}")
+        return []
+
+    visible_ssids = []
+    output = networks_cmd.stdout.decode("cp932", errors="ignore")
+    for line in output.splitlines():
+        label, separator, value = line.partition(":")
+        ssid = value.strip()
+        if separator and label.strip().startswith("SSID ") and ssid and ssid not in visible_ssids:
+            visible_ssids.append(ssid)
+    return visible_ssids
+
 def switch_to_wifi(ssid):
     """指定したWi-Fiプロファイルへの切り替えを行います"""
     if get_current_wifi_ssid() == ssid:
@@ -150,10 +171,26 @@ def main():
     try:
         print("🔍 パスワード保存済みプロファイルを確認中...")
         saved_profiles = get_saved_pc_profiles()
-        wifi_targets = [ssid for ssid in COMPANY_WIFI_POOL if ssid in saved_profiles]
+        visible_profiles = get_visible_wifi_ssids()
+        if COMPANY_WIFI_POOL:
+            candidate_profiles = COMPANY_WIFI_POOL
+        else:
+            candidate_profiles = saved_profiles
+            print("ℹ️ INIの対象ネットワークが空のため、現在検出できる保存済みWi-Fiを使用します。")
+        wifi_targets = [
+            ssid for ssid in candidate_profiles
+            if ssid in saved_profiles and ssid in visible_profiles
+        ]
         
         if not wifi_targets:
-            print("❌ このPCに設定されている対象の社内Wi-Fiプロファイルが見つかりません。")
+            if not saved_profiles:
+                print("❌ このPCに保存済みのWi-Fiプロファイルが見つかりません。")
+            elif not visible_profiles:
+                print("❌ 現在検出できるWi-Fiネットワークがありません。")
+            elif COMPANY_WIFI_POOL:
+                print("❌ 設定された対象のうち、保存済みで現在検出できるWi-Fiプロファイルがありません。")
+            else:
+                print("❌ 保存済みで現在検出できるWi-Fiプロファイルがありません。")
             return
 
         print(f"📋 評価対象のWi-Fiリスト (Queued targets): {wifi_targets}\n")
