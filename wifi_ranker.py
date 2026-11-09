@@ -1,9 +1,11 @@
 import configparser
+import ctypes
 import subprocess
 import time
 import socket
 import sys
 from pathlib import Path
+from ctypes import wintypes
 
 # =====================================================================
 # 🔍 STEP 1: DEPENDENCY CHECK / 依存関係の確認
@@ -26,22 +28,8 @@ CONFIG_FILE = Path(__file__).resolve().with_name("wifi_ranker.ini")
 
 def load_config():
     if not CONFIG_FILE.exists():
-        config = configparser.ConfigParser()
-        config["GENERAL"] = {
-            "wifi_interface": "Wi-Fi",
-            "connect_timeout": "20",
-            "test_timeout": "15",
-            "optimization_mode": "download_heavy",
-            "auto_switch": "false",
-        }
-        config["WIFI"] = {
-            "target_networks": "DP-TK1,DP-TK2,DP-TK3,DP-TK4,DP-TK5 2.4G,DP-TK5 5.0G"
-        }
-        try:
-            with CONFIG_FILE.open("x", encoding="utf-8") as config_file:
-                config.write(config_file)
-        except FileExistsError:
-            pass
+        print(f"❌ 設定ファイルが見つかりません: {CONFIG_FILE}")
+        sys.exit(1)
 
     config = configparser.ConfigParser()
     config.read(CONFIG_FILE, encoding="utf-8")
@@ -49,16 +37,29 @@ def load_config():
 
 
 CONFIG = load_config()
+
+def get_boolean_setting(section, option, fallback=False):
+    value = CONFIG.get(section, option, fallback="").strip()
+    if not value:
+        return fallback
+    try:
+        return configparser.ConfigParser.BOOLEAN_STATES[value.lower()]
+    except KeyError:
+        raise ValueError(f"Not a boolean: {value}")
+
+
 WIFI_INTERFACE = CONFIG.get("GENERAL", "wifi_interface")
 CONNECT_TIMEOUT = CONFIG.getint("GENERAL", "connect_timeout")
 TEST_TIMEOUT = CONFIG.getint("GENERAL", "test_timeout")
 OPTIMIZATION_MODE = CONFIG.get("GENERAL", "optimization_mode")
-AUTO_SWITCH = CONFIG.getboolean("GENERAL", "auto_switch", fallback=False)
+AUTO_SWITCH = get_boolean_setting("GENERAL", "auto_switch", fallback=False)
 COMPANY_WIFI_POOL = [
     ssid.strip()
     for ssid in CONFIG.get("WIFI", "target_networks", fallback="").split(",")
     if ssid.strip()
 ]
+DISCOVERY_MODE = get_boolean_setting("WIFI", "discovery_mode", fallback=False)
+TARGET_PREFIX = CONFIG.get("WIFI", "target_prefix", fallback="").strip()
 
 def get_current_wifi_ssid():
     """現在接続中のWi-Fiネットワーク名(SSID)を安全に取得します"""
@@ -90,25 +91,120 @@ def get_saved_pc_profiles():
     except Exception:
         return []
 
-def get_visible_wifi_ssids():
-    """現在Wi-Fiインターフェースから検出できるSSID一覧を返します"""
-    try:
-        networks_cmd = subprocess.run(
-            ["netsh", "wlan", "show", "networks", "mode=bssid", f"interface={WIFI_INTERFACE}"],
-            capture_output=True,
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError) as e:
-        print(f"⚠️ 周辺Wi-Fiネットワークを検索できませんでした: {e}")
-        return []
+def request_wifi_scan():
+    """Ask the Windows WLAN service to scan its wireless interfaces."""
+    class GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", wintypes.DWORD),
+            ("Data2", wintypes.WORD),
+            ("Data3", wintypes.WORD),
+            ("Data4", wintypes.BYTE * 8),
+        ]
 
+    class WLAN_INTERFACE_INFO(ctypes.Structure):
+        _fields_ = [
+            ("InterfaceGuid", GUID),
+            ("strInterfaceDescription", wintypes.WCHAR * 256),
+            ("isState", wintypes.DWORD),
+        ]
+
+    class WLAN_INTERFACE_INFO_LIST(ctypes.Structure):
+        _fields_ = [
+            ("dwNumberOfItems", wintypes.DWORD),
+            ("dwIndex", wintypes.DWORD),
+            ("InterfaceInfo", WLAN_INTERFACE_INFO * 1),
+        ]
+
+    wlanapi = ctypes.WinDLL("wlanapi")
+    wlanapi.WlanOpenHandle.argtypes = [
+        wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    wlanapi.WlanOpenHandle.restype = wintypes.DWORD
+    wlanapi.WlanEnumInterfaces.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p,
+        ctypes.POINTER(ctypes.POINTER(WLAN_INTERFACE_INFO_LIST)),
+    ]
+    wlanapi.WlanEnumInterfaces.restype = wintypes.DWORD
+    wlanapi.WlanScan.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(GUID),
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+    ]
+    wlanapi.WlanScan.restype = wintypes.DWORD
+    wlanapi.WlanFreeMemory.argtypes = [ctypes.c_void_p]
+    wlanapi.WlanCloseHandle.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    handle = wintypes.HANDLE()
+    negotiated_version = wintypes.DWORD()
+    result = wlanapi.WlanOpenHandle(
+        2, None, ctypes.byref(negotiated_version), ctypes.byref(handle)
+    )
+    if result:
+        print(f"⚠️ Windows Wi-Fi scan could not be initialized: {ctypes.FormatError(result).strip()}")
+        return False
+
+    interface_list = ctypes.POINTER(WLAN_INTERFACE_INFO_LIST)()
+    try:
+        result = wlanapi.WlanEnumInterfaces(
+            handle, None, ctypes.byref(interface_list)
+        )
+        if result:
+            print(f"⚠️ Windows Wi-Fi interfaces could not be listed: {ctypes.FormatError(result).strip()}")
+            return False
+
+        scan_started = False
+        for index in range(interface_list.contents.dwNumberOfItems):
+            address = (
+                ctypes.addressof(interface_list.contents.InterfaceInfo)
+                + index * ctypes.sizeof(WLAN_INTERFACE_INFO)
+            )
+            interface = ctypes.cast(address, ctypes.POINTER(WLAN_INTERFACE_INFO)).contents
+            result = wlanapi.WlanScan(
+                handle, ctypes.byref(interface.InterfaceGuid), None, None, None
+            )
+            if result:
+                print(
+                    f"⚠️ Windows Wi-Fi scan request failed for "
+                    f"'{interface.strInterfaceDescription}': {ctypes.FormatError(result).strip()}"
+                )
+            else:
+                scan_started = True
+        if not scan_started:
+            print("⚠️ Windows did not start a Wi-Fi scan on any wireless interface.")
+        return scan_started
+    finally:
+        if interface_list:
+            wlanapi.WlanFreeMemory(interface_list)
+        wlanapi.WlanCloseHandle(handle, None)
+
+def get_visible_wifi_ssids():
+    """Scan twice and combine visible SSIDs to reduce transient omissions."""
     visible_ssids = []
-    output = networks_cmd.stdout.decode("cp932", errors="ignore")
-    for line in output.splitlines():
-        label, separator, value = line.partition(":")
-        ssid = value.strip()
-        if separator and label.strip().startswith("SSID ") and ssid and ssid not in visible_ssids:
-            visible_ssids.append(ssid)
+    for scan_number in range(2):
+        if scan_number:
+            time.sleep(5)
+        try:
+            request_wifi_scan()
+        except OSError as e:
+            print(f"⚠️ Wi-Fi再スキャンを開始できませんでした ({scan_number + 1}/2): {e}")
+
+        time.sleep(5)
+        try:
+            networks_cmd = subprocess.run(
+                ["netsh", "wlan", "show", "networks", "mode=bssid", f"interface={WIFI_INTERFACE}"],
+                capture_output=True,
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as e:
+            print(f"⚠️ 周辺Wi-Fiネットワークの検索 ({scan_number + 1}/2) に失敗しました: {e}")
+            continue
+
+        output = networks_cmd.stdout.decode("cp932", errors="ignore")
+        for line in output.splitlines():
+            label, separator, value = line.partition(":")
+            ssid = value.strip()
+            if separator and label.strip().startswith("SSID ") and ssid and ssid not in visible_ssids:
+                visible_ssids.append(ssid)
+
     return visible_ssids
 
 def switch_to_wifi(ssid):
@@ -169,14 +265,26 @@ def main():
     best_target_ssid = None
 
     try:
+        if not DISCOVERY_MODE and not COMPANY_WIFI_POOL:
+            print("❌ discovery_mode is false, but [WIFI] target_networks is empty.")
+            print("   Add one or more comma-separated SSIDs to wifi_ranker.ini, or enable discovery_mode.")
+            return
+
         print("🔍 パスワード保存済みプロファイルを確認中...")
         saved_profiles = get_saved_pc_profiles()
         visible_profiles = get_visible_wifi_ssids()
-        if COMPANY_WIFI_POOL:
-            candidate_profiles = COMPANY_WIFI_POOL
+        print("Saved profiles:", saved_profiles)
+        print("Visible profiles:", visible_profiles)
+                
+        if DISCOVERY_MODE:
+            candidate_profiles = [
+                ssid for ssid in saved_profiles
+                if ssid in visible_profiles and ssid.casefold().startswith(TARGET_PREFIX.casefold())
+            ]
+            if TARGET_PREFIX:
+                print(f"ℹ️ 自動検出では '{TARGET_PREFIX}' で始まる保存済み・検出済みWi-Fiのみを使用します。")
         else:
-            candidate_profiles = saved_profiles
-            print("ℹ️ INIの対象ネットワークが空のため、現在検出できる保存済みWi-Fiを使用します。")
+            candidate_profiles = COMPANY_WIFI_POOL
         wifi_targets = [
             ssid for ssid in candidate_profiles
             if ssid in saved_profiles and ssid in visible_profiles
@@ -187,22 +295,21 @@ def main():
                 print("❌ このPCに保存済みのWi-Fiプロファイルが見つかりません。")
             elif not visible_profiles:
                 print("❌ 現在検出できるWi-Fiネットワークがありません。")
-            elif COMPANY_WIFI_POOL:
+            elif not DISCOVERY_MODE:
                 print("❌ 設定された対象のうち、保存済みで現在検出できるWi-Fiプロファイルがありません。")
             else:
-                print("❌ 保存済みで現在検出できるWi-Fiプロファイルがありません。")
+                print(f"❌ '{TARGET_PREFIX}' で始まる保存済み・現在検出できるWi-Fiプロファイルがありません。")
             return
 
         print(f"📋 評価対象のWi-Fiリスト (Queued targets): {wifi_targets}\n")
 
         # 🚀 PHASE 1: 現在の接続先をそのまま即時測定
-        if starting_wifi:
+        if starting_wifi and starting_wifi in wifi_targets:
             print(f"⚡ 現在の接続先 '{starting_wifi}' をそのまま即時測定します（シングルスレッド）...")
             dl, ul = test_current_network_speed_safely()
             leaderboard.append({"ssid": starting_wifi, "download": dl, "upload": ul})
             print(f"   📊 測定結果 -> DL: {dl} Mbps | UL: {ul} Mbps")
-            if starting_wifi in wifi_targets:
-                wifi_targets.remove(starting_wifi)
+            wifi_targets.remove(starting_wifi)
 
         # 🔄 PHASE 2: 残りの対象ネットワークを巡回
         for ssid in wifi_targets:
