@@ -6,6 +6,7 @@ import socket
 import sys
 from pathlib import Path
 from ctypes import wintypes
+from urllib.error import URLError
 
 # =====================================================================
 # STEP 1: DEPENDENCY CHECK
@@ -51,6 +52,7 @@ def get_boolean_setting(section, option, fallback=False):
 WIFI_INTERFACE = CONFIG.get("GENERAL", "wifi_interface")
 CONNECT_TIMEOUT = CONFIG.getint("GENERAL", "connect_timeout")
 TEST_TIMEOUT = CONFIG.getint("GENERAL", "test_timeout")
+SPEEDTEST_THREAD_COUNT = 2
 OPTIMIZATION_MODE = CONFIG.get("GENERAL", "optimization_mode")
 AUTO_SWITCH = get_boolean_setting("GENERAL", "auto_switch", fallback=False)
 COMPANY_WIFI_POOL = [
@@ -235,22 +237,33 @@ def switch_to_wifi(ssid):
 def test_current_network_speed_safely():
     """Measure bandwidth with a socket timeout."""
     socket.setdefaulttimeout(float(TEST_TIMEOUT))
-    st = None
-    try:
-        st = speedtest.Speedtest(secure=True)
-        st.get_best_server()
-        download_speed = st.download(threads=2) / 1_000_000
-        upload_speed = st.upload(threads=2) / 1_000_000
-        return round(download_speed, 2), round(upload_speed, 2)
-    except (speedtest.SpeedtestException, socket.timeout, Exception) as e:
-        print(f"   WARNING: Speed test failed or timed out: {e}")
-        return 0.0, 0.0
-    finally:
-        if st and hasattr(st, "results"):
-            try:
-                del st
-            except Exception:
-                pass
+    for attempt in range(3):
+        st = None
+        try:
+            st = speedtest.Speedtest(secure=True)
+            st.get_best_server()
+            download_speed = st.download(threads=SPEEDTEST_THREAD_COUNT) / 1_000_000
+            upload_speed = st.upload(threads=SPEEDTEST_THREAD_COUNT) / 1_000_000
+            return round(download_speed, 2), round(upload_speed, 2)
+        except Exception as e:
+            dns_lookup_failed = isinstance(e, socket.gaierror) or (
+                isinstance(e, URLError) and isinstance(e.reason, socket.gaierror)
+            )
+            if dns_lookup_failed and attempt < 2:
+                print(
+                    f"   WARNING: DNS lookup failed; retrying speed test "
+                    f"({attempt + 1}/2): {e}"
+                )
+                time.sleep(1)
+                continue
+            print(f"   WARNING: Speed test failed or timed out: {e}")
+            return 0.0, 0.0
+        finally:
+            if st and hasattr(st, "results"):
+                try:
+                    del st
+                except Exception:
+                    pass
 
 
 def calculate_score(item):
@@ -326,7 +339,10 @@ def main():
         print(f"Wi-Fi networks queued for evaluation: {wifi_targets}\n")
 
         if starting_wifi and starting_wifi in wifi_targets:
-            print(f"Testing the current network '{starting_wifi}' first...")
+            print(
+                f"Testing the current network '{starting_wifi}' first "
+                f"(thread count: {SPEEDTEST_THREAD_COUNT})..."
+            )
             dl, ul = test_current_network_speed_safely()
             leaderboard.append({"ssid": starting_wifi, "download": dl, "upload": ul})
             print(f"   Results -> DL: {dl} Mbps | UL: {ul} Mbps")
@@ -335,7 +351,10 @@ def main():
         for ssid in wifi_targets:
             print(f"Switching to target network: {ssid}...")
             if switch_to_wifi(ssid):
-                print("   Connected. Starting the speed test...")
+                print(
+                    f"   Connected. Starting the speed test "
+                    f"(thread count: {SPEEDTEST_THREAD_COUNT})..."
+                )
                 dl, ul = test_current_network_speed_safely()
                 leaderboard.append({"ssid": ssid, "download": dl, "upload": ul})
                 print(f"   Results -> DL: {dl} Mbps | UL: {ul} Mbps")
