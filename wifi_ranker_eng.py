@@ -61,7 +61,11 @@ COMPANY_WIFI_POOL = [
     if ssid.strip()
 ]
 DISCOVERY_MODE = get_boolean_setting("WIFI", "discovery_mode", fallback=False)
-TARGET_PREFIX = CONFIG.get("WIFI", "target_prefix", fallback="").strip()
+TARGET_PREFIXES = [
+    prefix.strip()
+    for prefix in CONFIG.get("WIFI", "target_prefix", fallback="").split(",")
+    if prefix.strip()
+]
 
 
 def get_current_wifi_ssid():
@@ -307,12 +311,15 @@ def main():
         if DISCOVERY_MODE:
             candidate_profiles = [
                 ssid for ssid in saved_profiles
-                if ssid in visible_profiles and ssid.casefold().startswith(TARGET_PREFIX.casefold())
+                if ssid in visible_profiles and (
+                    not TARGET_PREFIXES
+                    or any(ssid.casefold().startswith(prefix.casefold()) for prefix in TARGET_PREFIXES)
+                )
             ]
-            if TARGET_PREFIX:
+            if TARGET_PREFIXES:
                 print(
                     f"Discovery includes saved and visible Wi-Fi networks "
-                    f"starting with '{TARGET_PREFIX}'."
+                    f"starting with any of: {', '.join(TARGET_PREFIXES)}."
                 )
         else:
             candidate_profiles = COMPANY_WIFI_POOL
@@ -331,8 +338,8 @@ def main():
                 print("ERROR: None of the configured targets are both saved and currently visible.")
             else:
                 print(
-                    f"ERROR: No saved and visible Wi-Fi profiles start with "
-                    f"'{TARGET_PREFIX}'."
+                    f"ERROR: No saved and visible Wi-Fi profiles start with any of: "
+                    f"{', '.join(TARGET_PREFIXES)}."
                 )
             return
 
