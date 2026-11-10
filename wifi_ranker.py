@@ -24,7 +24,8 @@ except ModuleNotFoundError:
     sys.exit(1)
 
 # --- ⚙️ CONFIGURATION & CONSTANTS / 各種設定 ---
-CONFIG_FILE = Path(__file__).resolve().with_name("wifi_ranker.ini")
+APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+CONFIG_FILE = APP_DIR / "wifi_ranker.ini"
 
 def load_config():
     if not CONFIG_FILE.exists():
