@@ -6,6 +6,7 @@ import socket
 import sys
 from pathlib import Path
 from ctypes import wintypes
+from urllib.error import URLError
 
 # =====================================================================
 # 🔍 STEP 1: DEPENDENCY CHECK / 依存関係の確認
@@ -52,6 +53,7 @@ def get_boolean_setting(section, option, fallback=False):
 WIFI_INTERFACE = CONFIG.get("GENERAL", "wifi_interface")
 CONNECT_TIMEOUT = CONFIG.getint("GENERAL", "connect_timeout")
 TEST_TIMEOUT = CONFIG.getint("GENERAL", "test_timeout")
+SPEEDTEST_THREAD_COUNT = 2
 OPTIMIZATION_MODE = CONFIG.get("GENERAL", "optimization_mode")
 AUTO_SWITCH = get_boolean_setting("GENERAL", "auto_switch", fallback=False)
 COMPANY_WIFI_POOL = [
@@ -225,24 +227,35 @@ def switch_to_wifi(ssid):
     return False
 
 def test_current_network_speed_safely():
-    """スレッド数を1に固定してルーター負荷を抑えつつ帯域を測定します"""
+    """スレッド数を指定して帯域を測定します"""
     socket.setdefaulttimeout(float(TEST_TIMEOUT))
-    st = None
-    try:
-        st = speedtest.Speedtest(secure=True)
-        st.get_best_server()
-        download_speed = st.download(threads=2) / 1_000_000 
-        upload_speed = st.upload(threads=2) / 1_000_000
-        return round(download_speed, 2), round(upload_speed, 2)
-    except (speedtest.SpeedtestException, socket.timeout, Exception) as e:
-        print(f"   ⚠️ 測定エラーまたはタイムアウト: {e}")
-        return 0.0, 0.0
-    finally:
-        if st and hasattr(st, 'results'):
-            try:
-                del st
-            except Exception:
-                pass
+    for attempt in range(3):
+        st = None
+        try:
+            st = speedtest.Speedtest(secure=True)
+            st.get_best_server()
+            download_speed = st.download(threads=SPEEDTEST_THREAD_COUNT) / 1_000_000
+            upload_speed = st.upload(threads=SPEEDTEST_THREAD_COUNT) / 1_000_000
+            return round(download_speed, 2), round(upload_speed, 2)
+        except (speedtest.SpeedtestException, socket.timeout, Exception) as e:
+            dns_lookup_failed = isinstance(e, socket.gaierror) or (
+                isinstance(e, URLError) and isinstance(e.reason, socket.gaierror)
+            )
+            if dns_lookup_failed and attempt < 2:
+                print(
+                    f"   ⚠️ DNS解決に失敗したため速度測定を再試行します "
+                    f"({attempt + 1}/2): {e}"
+                )
+                time.sleep(1)
+                continue
+            print(f"   ⚠️ 測定エラーまたはタイムアウト: {e}")
+            return 0.0, 0.0
+        finally:
+            if st and hasattr(st, 'results'):
+                try:
+                    del st
+                except Exception:
+                    pass
 
 def calculate_score(item):
     dl = item['download']
@@ -306,7 +319,10 @@ def main():
 
         # 🚀 PHASE 1: 現在の接続先をそのまま即時測定
         if starting_wifi and starting_wifi in wifi_targets:
-            print(f"⚡ 現在の接続先 '{starting_wifi}' をそのまま即時測定します（シングルスレッド）...")
+            print(
+                f"⚡ 現在の接続先 '{starting_wifi}' をそのまま即時測定します"
+                f"（ThreadCount: {SPEEDTEST_THREAD_COUNT}）..."
+            )
             dl, ul = test_current_network_speed_safely()
             leaderboard.append({"ssid": starting_wifi, "download": dl, "upload": ul})
             print(f"   📊 測定結果 -> DL: {dl} Mbps | UL: {ul} Mbps")
@@ -316,7 +332,10 @@ def main():
         for ssid in wifi_targets:
             print(f"🔄 対象ネットワークへ切り替え中: {ssid}...")
             if switch_to_wifi(ssid):
-                print("   ✅ 接続完了。速度測定を開始します（シングルスレッド）...")
+                print(
+                    f"   ✅ 接続完了。速度測定を開始します"
+                    f"（ThreadCount: {SPEEDTEST_THREAD_COUNT}）..."
+                )
                 dl, ul = test_current_network_speed_safely()
                 leaderboard.append({"ssid": ssid, "download": dl, "upload": ul})
                 print(f"   📊 測定結果 -> DL: {dl} Mbps | UL: {ul} Mbps")
