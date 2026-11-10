@@ -62,7 +62,11 @@ COMPANY_WIFI_POOL = [
     if ssid.strip()
 ]
 DISCOVERY_MODE = get_boolean_setting("WIFI", "discovery_mode", fallback=False)
-TARGET_PREFIX = CONFIG.get("WIFI", "target_prefix", fallback="").strip()
+TARGET_PREFIXES = [
+    prefix.strip()
+    for prefix in CONFIG.get("WIFI", "target_prefix", fallback="").split(",")
+    if prefix.strip()
+]
 
 def get_current_wifi_ssid():
     """現在接続中のWi-Fiネットワーク名(SSID)を安全に取得します"""
@@ -293,10 +297,16 @@ def main():
         if DISCOVERY_MODE:
             candidate_profiles = [
                 ssid for ssid in saved_profiles
-                if ssid in visible_profiles and ssid.casefold().startswith(TARGET_PREFIX.casefold())
+                if ssid in visible_profiles and (
+                    not TARGET_PREFIXES
+                    or any(ssid.casefold().startswith(prefix.casefold()) for prefix in TARGET_PREFIXES)
+                )
             ]
-            if TARGET_PREFIX:
-                print(f"ℹ️ 自動検出では '{TARGET_PREFIX}' で始まる保存済み・検出済みWi-Fiのみを使用します。")
+            if TARGET_PREFIXES:
+                print(
+                    f"ℹ️ 自動検出では {', '.join(TARGET_PREFIXES)} のいずれかで始まる"
+                    "保存済み・検出済みWi-Fiのみを使用します。"
+                )
         else:
             candidate_profiles = COMPANY_WIFI_POOL
         wifi_targets = [
@@ -312,7 +322,10 @@ def main():
             elif not DISCOVERY_MODE:
                 print("❌ 設定された対象のうち、保存済みで現在検出できるWi-Fiプロファイルがありません。")
             else:
-                print(f"❌ '{TARGET_PREFIX}' で始まる保存済み・現在検出できるWi-Fiプロファイルがありません。")
+                print(
+                    f"❌ {', '.join(TARGET_PREFIXES)} のいずれかで始まる"
+                    "保存済み・現在検出できるWi-Fiプロファイルがありません。"
+                )
             return
 
         print(f"📋 評価対象のWi-Fiリスト (Queued targets): {wifi_targets}\n")
