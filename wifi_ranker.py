@@ -53,7 +53,7 @@ def get_boolean_setting(section, option, fallback=False):
 WIFI_INTERFACE = CONFIG.get("GENERAL", "wifi_interface")
 CONNECT_TIMEOUT = CONFIG.getint("GENERAL", "connect_timeout")
 TEST_TIMEOUT = CONFIG.getint("GENERAL", "test_timeout")
-SPEEDTEST_THREAD_COUNT = 2
+SPEEDTEST_THREAD_COUNT = CONFIG.getint("GENERAL", "thread_count", fallback=2)
 OPTIMIZATION_MODE = CONFIG.get("GENERAL", "optimization_mode")
 AUTO_SWITCH = get_boolean_setting("GENERAL", "auto_switch", fallback=False)
 COMPANY_WIFI_POOL = [
@@ -316,13 +316,11 @@ def main():
             return
 
         print(f"📋 評価対象のWi-Fiリスト (Queued targets): {wifi_targets}\n")
+        print(f"⚙️ 速度測定スレッド数 (ThreadCount): {SPEEDTEST_THREAD_COUNT}")
 
         # 🚀 PHASE 1: 現在の接続先をそのまま即時測定
         if starting_wifi and starting_wifi in wifi_targets:
-            print(
-                f"⚡ 現在の接続先 '{starting_wifi}' をそのまま即時測定します"
-                f"（ThreadCount: {SPEEDTEST_THREAD_COUNT}）..."
-            )
+            print(f"⚡ 現在の接続先 '{starting_wifi}' をそのまま即時測定します...")
             dl, ul = test_current_network_speed_safely()
             leaderboard.append({"ssid": starting_wifi, "download": dl, "upload": ul})
             print(f"   📊 測定結果 -> DL: {dl} Mbps | UL: {ul} Mbps")
@@ -332,10 +330,7 @@ def main():
         for ssid in wifi_targets:
             print(f"🔄 対象ネットワークへ切り替え中: {ssid}...")
             if switch_to_wifi(ssid):
-                print(
-                    f"   ✅ 接続完了。速度測定を開始します"
-                    f"（ThreadCount: {SPEEDTEST_THREAD_COUNT}）..."
-                )
+                print("   ✅ 接続完了。速度測定を開始します...")
                 dl, ul = test_current_network_speed_safely()
                 leaderboard.append({"ssid": ssid, "download": dl, "upload": ul})
                 print(f"   📊 測定結果 -> DL: {dl} Mbps | UL: {ul} Mbps")
