@@ -52,7 +52,7 @@ def get_boolean_setting(section, option, fallback=False):
 WIFI_INTERFACE = CONFIG.get("GENERAL", "wifi_interface")
 CONNECT_TIMEOUT = CONFIG.getint("GENERAL", "connect_timeout")
 TEST_TIMEOUT = CONFIG.getint("GENERAL", "test_timeout")
-SPEEDTEST_THREAD_COUNT = 2
+SPEEDTEST_THREAD_COUNT = CONFIG.getint("GENERAL", "thread_count", fallback=2)
 OPTIMIZATION_MODE = CONFIG.get("GENERAL", "optimization_mode")
 AUTO_SWITCH = get_boolean_setting("GENERAL", "auto_switch", fallback=False)
 COMPANY_WIFI_POOL = [
@@ -337,12 +337,10 @@ def main():
             return
 
         print(f"Wi-Fi networks queued for evaluation: {wifi_targets}\n")
+        print(f"Speed-test thread count (ThreadCount): {SPEEDTEST_THREAD_COUNT}")
 
         if starting_wifi and starting_wifi in wifi_targets:
-            print(
-                f"Testing the current network '{starting_wifi}' first "
-                f"(thread count: {SPEEDTEST_THREAD_COUNT})..."
-            )
+            print(f"Testing the current network '{starting_wifi}' first...")
             dl, ul = test_current_network_speed_safely()
             leaderboard.append({"ssid": starting_wifi, "download": dl, "upload": ul})
             print(f"   Results -> DL: {dl} Mbps | UL: {ul} Mbps")
@@ -351,10 +349,7 @@ def main():
         for ssid in wifi_targets:
             print(f"Switching to target network: {ssid}...")
             if switch_to_wifi(ssid):
-                print(
-                    f"   Connected. Starting the speed test "
-                    f"(thread count: {SPEEDTEST_THREAD_COUNT})..."
-                )
+                print("   Connected. Starting the speed test...")
                 dl, ul = test_current_network_speed_safely()
                 leaderboard.append({"ssid": ssid, "download": dl, "upload": ul})
                 print(f"   Results -> DL: {dl} Mbps | UL: {ul} Mbps")
