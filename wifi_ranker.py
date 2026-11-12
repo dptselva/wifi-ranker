@@ -245,6 +245,8 @@ def get_saved_pc_profiles():
             label, separator, value = line.partition(":")
             normalized_label = "".join(label.casefold().split())
             ssid = value.strip()
+            if len(ssid) >= 2 and ssid.startswith('"') and ssid.endswith('"'):
+                ssid = ssid[1:-1]
             if (
                 separator
                 and normalized_label in ("ssidname", "ssid名")
@@ -381,29 +383,76 @@ def get_visible_wifi_ssids():
 
     return visible_ssids
 
-def switch_to_wifi(ssid, profile_name=None):
+def switch_to_wifi(ssid, profile_name=None, retry_once=False):
     """指定したWi-Fiプロファイルへの切り替えを行います"""
     if get_current_wifi_ssid() == ssid:
         return True
 
-    subprocess.run(
-        [
-            "netsh",
-            "wlan",
-            "connect",
-            f"name={profile_name or ssid}",
-            f"interface={WIFI_INTERFACE}",
-        ],
-        shell=False,
-        capture_output=True,
-    )
-    
-    start_time = time.time()
-    while time.time() - start_time < CONNECT_TIMEOUT:
-        if get_current_wifi_ssid() == ssid:
+    command = [
+        "netsh",
+        "wlan",
+        "connect",
+        f"name={profile_name or ssid}",
+        f"interface={WIFI_INTERFACE}",
+    ]
+    attempts = 2 if retry_once else 1
+    for attempt in range(attempts):
+        try:
+            result = subprocess.run(command, shell=False, capture_output=True)
+        except OSError as e:
+            if attempt + 1 < attempts:
+                print(f"⚠️ Wi-Fi接続要求を実行できませんでした。再試行します: {e}")
+                time.sleep(2)
+                continue
+            print(f"⚠️ Wi-Fi接続要求を実行できませんでした (Could not run netsh): {e}")
+            return False
+
+        command_output = (result.stdout + result.stderr).decode(
+            "cp932", errors="ignore"
+        ).strip()
+        if result.returncode != 0:
+            if attempt + 1 < attempts:
+                print(
+                    f"⚠️ Wi-Fi接続要求に失敗しました。再試行します "
+                    f"(netsh exit code {result.returncode})."
+                )
+                if command_output:
+                    print(f"   詳細 (Details): {command_output}")
+                time.sleep(2)
+                continue
+            print(
+                f"⚠️ Wi-Fi接続要求に失敗しました "
+                f"(netsh exit code {result.returncode})."
+            )
+            print(f"   詳細 (Details): {command_output or 'netsh returned no details.'}")
+            return False
+
+        start_time = time.monotonic()
+        while time.monotonic() - start_time < CONNECT_TIMEOUT:
+            if get_current_wifi_ssid() == ssid:
+                time.sleep(2)
+                return True
+            time.sleep(1)
+
+        current_ssid = get_current_wifi_ssid()
+        if current_ssid == ssid:
             time.sleep(2)
             return True
-        time.sleep(1)
+        if attempt + 1 < attempts:
+            print(
+                f"⚠️ {CONNECT_TIMEOUT}秒以内に '{ssid}' への接続を確認できませんでした。"
+                "再試行します。"
+            )
+            time.sleep(2)
+            continue
+
+        print(
+            f"⚠️ {CONNECT_TIMEOUT}秒以内に '{ssid}' への接続を確認できませんでした "
+            f"(Could not confirm connection; current SSID: {current_ssid or '未接続'})."
+        )
+        print(f"   netsh: {command_output or 'no additional details'}")
+        return False
+
     return False
 
 def test_current_network_speed_safely():
@@ -498,11 +547,13 @@ def main():
                 print("❌ 現在検出できるWi-Fiネットワークがありません。")
             elif not DISCOVERY_MODE:
                 print("❌ 設定された対象のうち、保存済みで現在検出できるWi-Fiプロファイルがありません。")
-            else:
+            elif TARGET_PREFIXES:
                 print(
                     f"❌ {', '.join(TARGET_PREFIXES)} のいずれかで始まる"
                     "保存済み・現在検出できるWi-Fiプロファイルがありません。"
                 )
+            else:
+                print("❌ 保存済みかつ現在検出できるWi-Fiネットワークがありません。")
             return
 
         print(f"\n📋 評価対象のWi-Fiリスト (Queued targets): {wifi_targets}\n")
@@ -600,7 +651,7 @@ def main():
             print(f"\n" + "-"*70)
             print(f"🧹 クリーンアップ: 指定されたネットワーク '{target_wifi}' へ切り替え・復帰中...")
             profile_name = saved_profile_by_ssid.get(target_wifi, target_wifi)
-            if switch_to_wifi(target_wifi, profile_name):
+            if switch_to_wifi(target_wifi, profile_name, retry_once=True):
                 print("   🔌 正常に指定の接続状況に復元されました!")
             else:
                 print(f"   ⚠️ '{target_wifi}' への接続復帰に失敗しました。手動でネットワークを確認してください。")
